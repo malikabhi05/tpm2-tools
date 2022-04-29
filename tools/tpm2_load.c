@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "files.h"
 #include "log.h"
@@ -9,8 +10,9 @@
 #include "tpm2_tool.h"
 
 #define MAX_SESSIONS 3
-typedef struct tpm_load_ctx tpm_load_ctx;
-struct tpm_load_ctx {
+
+typedef struct tpm_tool_ctx tpm_load_ctx;
+struct tpm_tool_ctx {
     /*
      * Inputs
      */
@@ -41,6 +43,11 @@ struct tpm_load_ctx {
     TPM2B_DIGEST cp_hash;
     bool is_command_dispatch;
     TPMI_ALG_HASH parameter_hash_algorithm;
+
+    /*
+     * PEM specific
+     */
+    bool is_pem;
 };
 
 static tpm_load_ctx ctx = {
@@ -115,9 +122,11 @@ static tool_rc process_inputs(ESYS_CONTEXT *ectx) {
     /*
      * 1.b Add object names and their auth sessions
      */
-    tool_rc rc = tpm2_util_object_load_auth(ectx, ctx.parent.ctx_path,
-            ctx.parent.auth_str, &ctx.parent.object, false,
-            TPM2_HANDLE_ALL_W_NV);
+    tool_rc rc;
+    rc = tpm2_util_object_load_auth_pub_priv(ectx,
+        ctx.is_pem ? ctx.object.privpath : ctx.parent.ctx_path,
+        ctx.parent.auth_str, &ctx.parent.object, false, TPM2_HANDLE_ALL_W_NV,
+        &ctx.object.public, &ctx.object.private);
     if (rc != tool_rc_success) {
         return rc;
     }
@@ -129,16 +138,20 @@ static tool_rc process_inputs(ESYS_CONTEXT *ectx) {
     /*
      * 3. Command specific initializations
      */
-    bool is_file_op_success = files_load_public(ctx.object.pubpath,
-        &ctx.object.public);
-    if (!is_file_op_success) {
-        return tool_rc_general_error;
-    }
-
-    is_file_op_success = files_load_private(ctx.object.privpath,
-        &ctx.object.private);
-    if (!is_file_op_success) {
-        return tool_rc_general_error;
+    bool is_file_op_success;
+    
+    if (!ctx.is_pem) {
+        is_file_op_success = files_load_public(ctx.object.pubpath,
+                                                 &ctx.object.public);
+        if (!is_file_op_success) {
+            return tool_rc_general_error;
+        }
+    
+        is_file_op_success = files_load_private(ctx.object.privpath,
+                                             &ctx.object.private);
+        if (!is_file_op_success) {
+            return tool_rc_general_error;
+        }
     }
 
     /*
@@ -172,19 +185,26 @@ static tool_rc check_options(ESYS_CONTEXT *ectx) {
     UNUSED(ectx);
 
     tool_rc rc = tool_rc_success;
-    if (!ctx.parent.ctx_path) {
-        LOG_ERR("Expected parent object via -C");
-        rc = tool_rc_option_error;
-    }
-
-    if (!ctx.object.pubpath) {
-        LOG_ERR("Expected public object portion via -u");
-        rc = tool_rc_option_error;
-    }
 
     if (!ctx.object.privpath) {
         LOG_ERR("Expected private object portion via -r");
         rc = tool_rc_option_error;
+    }
+    /*
+     * check for PEM file
+     * If not PEM, we continue as normal
+     */
+    ctx.is_pem = !ctx.parent.ctx_path && !ctx.object.pubpath;
+    if (!ctx.is_pem) {
+        if (!ctx.parent.ctx_path) {
+            LOG_ERR("Expected parent object via -C or a PEM file with -r");
+            rc = tool_rc_option_error;
+        }
+
+        if (!ctx.object.pubpath) {
+            LOG_ERR("Expected public object portion via -u or a PEM file with -r");
+            rc = tool_rc_option_error;
+        }
     }
 
     if (!ctx.contextpath && !ctx.cp_hash_path) {

@@ -61,4 +61,33 @@ tool_rc tpm2_util_object_load_auth(ESYS_CONTEXT *ctx, const char *objectstr,
         const char *auth, tpm2_loaded_object *outobject,
         bool is_restricted_pswd_session, tpm2_handle_flags flags);
 
+/**
+ * Same as tpm2_util_object_load_auth but also allows the public and
+ * private values to be populated in case if a PEM file is detected as the
+ * input instead of a context file/handle.
+ * @param ctx
+ * a TSS ESAPI context.
+ * @param objectstr
+ * The string representation of the object to be loaded.
+ * @param auth
+ * The auth string for the object.
+ * @param is_restricted_pswd_session
+ * The auth session associated with the object is restricted to TPM2_RS_PW
+ * @param outobject
+ * A *tpm2_loaded_object* with a loaded handle. The path member will also be
+ * set when the *objectstr* is a context file.
+ * @param flags
+ * A *tpm2_hierarchy_flags* value to specify expected valid hierarchy
+ * @param pub
+ * The public part of a TSS private key read from a PEM file
+ * @param priv
+ * The private part of a TSS private key read from a PEM file
+ * @return
+ *  tool_rc indicating status
+ */
+tool_rc tpm2_util_object_load_auth_pub_priv(ESYS_CONTEXT *ctx, const char *objectstr,
+        const char *auth, tpm2_loaded_object *outobject,
+        bool is_restricted_pswd_session, tpm2_handle_flags flags,
+        TPM2B_PUBLIC *pub, TPM2B_PRIVATE *priv);
+
 #endif /* LIB_OBJECT_H_ */
