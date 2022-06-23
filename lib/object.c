@@ -7,22 +7,10 @@
 #include "tool_rc.h"
 #include "tpm2.h"
 #include "tpm2_auth_util.h"
-#include <openssl/pem.h>
-#include <openssl/bio.h>
-#include <openssl/asn1.h>
-#include <openssl/asn1t.h>
 #include <tss2/tss2_mu.h>
 
 #define NULL_OBJECT "null"
 #define NULL_OBJECT_LEN (sizeof(NULL_OBJECT) - 1)
-
-typedef struct {
-    ASN1_OBJECT *type;
-    ASN1_BOOLEAN emptyAuth;
-    ASN1_INTEGER *parent;
-    ASN1_OCTET_STRING *pubkey;
-    ASN1_OCTET_STRING *privkey;
-} TSSPRIVKEY_OBJ;
 
 ASN1_SEQUENCE(TSSPRIVKEY_OBJ) = {
     ASN1_SIMPLE(TSSPRIVKEY_OBJ, type, ASN1_OBJECT),
@@ -190,6 +178,54 @@ static tool_rc do_ctx_file(ESYS_CONTEXT *ctx, const char *objectstr, FILE *f,
     return files_load_tpm_context_from_file(ctx, &outobject->tr_handle, f);
 }
 
+tool_rc fetch_tpk(const char *objectstr, TSSPRIVKEY_OBJ **tpk) {
+    tool_rc rc = tool_rc_success;
+    BIO *input_bio = BIO_new_file(objectstr, "rb");
+    if (!input_bio) {
+        LOG_ERR("Unable to read as BIO file");
+        rc = tool_rc_general_error;
+        goto ret;
+    }
+
+    *tpk = PEM_read_bio_TSSPRIVKEY_OBJ(input_bio, NULL, NULL, NULL);
+    if (*tpk == NULL) {
+        LOG_ERR("Unable to read PEM from provided BIO/file");
+        rc = tool_rc_general_error;
+        goto ret;
+    }
+
+ret:
+    if (input_bio) {
+        BIO_free(input_bio);
+    }
+    return rc;
+}
+
+tool_rc fetch_priv_pub_from_tpk(TSSPRIVKEY_OBJ *tpk, TPM2B_PUBLIC *pub,
+        TPM2B_PRIVATE *priv) {
+    tool_rc rc;
+    int pub_len = tpk->pubkey->length;
+    int priv_len = tpk->privkey->length;
+            
+    rc = Tss2_MU_TPM2B_PUBLIC_Unmarshal(tpk->pubkey->data, pub_len,
+        NULL, pub);
+    if (rc != tool_rc_success) {
+        LOG_ERR("Error deserializing public portion of object");
+        goto error;
+    }
+
+    rc = Tss2_MU_TPM2B_PRIVATE_Unmarshal(tpk->privkey->data, priv_len,
+        NULL, priv);
+    if (rc != tool_rc_success) {
+        LOG_ERR("Error deserializing private portion of object");
+        goto error;
+    }
+    return tool_rc_success;
+
+error:
+    return tool_rc_general_error;
+}
+
 static tool_rc tpm2_util_object_load2(ESYS_CONTEXT *ctx, const char *objectstr,
         const char *auth, bool do_auth, tpm2_loaded_object *outobject,
         bool is_restricted_pswd_session, tpm2_handle_flags flags,
@@ -225,35 +261,15 @@ static tool_rc tpm2_util_object_load2(ESYS_CONTEXT *ctx, const char *objectstr,
              * Start by converting file to a openssl BIO object
              */
             TSSPRIVKEY_OBJ *tpk = NULL;
-            BIO *input_bio = BIO_new_file(objectstr, "rb");
-            if (!input_bio) {
-                LOG_ERR("Unable to read as BIO file");
-                goto error;
-            }
-
-            /*
-             * fetch out the various parts of the PEM file using openssl API
-             */
-            tpk = PEM_read_bio_TSSPRIVKEY_OBJ(input_bio, NULL, NULL, NULL);
-            if (tpk == NULL) {
-                LOG_ERR("Unable to read PEM from provided BIO/file");
-                goto error;
-            }
-
-            int pub_len = tpk->pubkey->length;
-            int priv_len = tpk->privkey->length;
-            
-            rc = Tss2_MU_TPM2B_PUBLIC_Unmarshal(tpk->pubkey->data, pub_len,
-                NULL, pub);
+            rc = fetch_tpk(objectstr, &tpk);
             if (rc != tool_rc_success) {
-                LOG_ERR("Error deserializing public portion of object");
+                LOG_ERR("Unable to fetch TSS PRIVKEY");
                 goto error;
             }
 
-            rc = Tss2_MU_TPM2B_PRIVATE_Unmarshal(tpk->privkey->data, priv_len,
-                NULL, priv);
+            rc = fetch_priv_pub_from_tpk(tpk, pub, priv);
             if (rc != tool_rc_success) {
-                LOG_ERR("Error deserializing private portion of object");
+                LOG_ERR("Unable to fetch public/private portion of tss privkey");
                 goto error;
             }
 
@@ -293,15 +309,11 @@ static tool_rc tpm2_util_object_load2(ESYS_CONTEXT *ctx, const char *objectstr,
             }
 
             TSSPRIVKEY_OBJ_free(tpk);
-            BIO_free(input_bio);
             rc = tool_rc_success;
             goto ret;
 error:
             if (tpk) {
                 TSSPRIVKEY_OBJ_free(tpk);
-            }
-            if (input_bio) {
-                BIO_free(input_bio);
             }
             rc = tool_rc_general_error;
             goto ret;

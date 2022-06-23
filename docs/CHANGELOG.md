@@ -2,6 +2,10 @@
 
 ### next
 
+  * tpm2_print:
+      - Added capability to parse out and print the public portion of a
+        TSS Private Key in the PEM format.
+
   * tpm2_load:
       - Added capability to load pem files in TSS2-Private-Key format for
         interoperability with tpm2-tss-engine, tpm2-openssl provider,

@@ -11,6 +11,9 @@
 #include "tpm2_convert.h"
 #include "tpm2_tool.h"
 #include "tpm2_util.h"
+#include "object.h"
+
+DECLARE_ASN1_FUNCTIONS(TSSPRIVKEY_OBJ);
 
 typedef bool (*print_fn)(FILE *f);
 
@@ -292,6 +295,43 @@ static bool print_TPM2B_PUBLIC(FILE *fstream) {
     return true;
 }
 
+static bool print_TSSPRIVKEY_OBJ(FILE *fstream) {
+    UNUSED(fstream);
+
+    tool_rc rc;
+    bool retval = true;
+    TSSPRIVKEY_OBJ *tpk = NULL;
+
+    rc = fetch_tpk(ctx.file.path, &tpk);
+    if (rc != tool_rc_success) {
+        LOG_ERR("Unable to fetch TSS PRIVKEY");
+        retval = false;
+        goto ret;
+    }
+    
+    TPM2B_PUBLIC pub = { 0 };
+    TPM2B_PRIVATE priv = { 0 };
+    rc = fetch_priv_pub_from_tpk(tpk, &pub, &priv);
+    if (rc != tool_rc_success) {
+        LOG_ERR("Unable to fetch public/private portion of tss privkey");
+        retval = false;
+        goto ret;
+    }
+
+    if (ctx.format_set) {
+        retval = tpm2_convert_pubkey_save(&pub, ctx.format, NULL);
+        goto ret;
+    }
+
+    tpm2_util_public_to_yaml(&pub, NULL);
+
+ret:
+    if (tpk) {
+        TSSPRIVKEY_OBJ_free(tpk);
+    }
+    return retval;
+}
+
 #define ADD_HANDLER(type) { .name = #type, .flags = 0, .fn = print_##type }
 #define ADD_HANDLER_FMT(type) { .name = #type, .flags = FLAG_FMT, .fn = print_##type }
 
@@ -306,7 +346,8 @@ static bool handle_type(const char *name) {
         ADD_HANDLER(TPMS_ATTEST),
         ADD_HANDLER(TPMS_CONTEXT),
         ADD_HANDLER_FMT(TPM2B_PUBLIC),
-        ADD_HANDLER_FMT(TPMT_PUBLIC)
+        ADD_HANDLER_FMT(TPMT_PUBLIC),
+        ADD_HANDLER_FMT(TSSPRIVKEY_OBJ)
     };
 
     size_t i;
@@ -333,9 +374,6 @@ static bool on_option(char key, char *value) {
     switch (key) {
     case 't':
         return handle_type(value);
-    case 'i':
-        ctx.file.path = value;
-        break;
     case 'f':
         ctx.format = tpm2_convert_pubkey_fmt_from_optarg(value);
         if (ctx.format == pubkey_format_err) {

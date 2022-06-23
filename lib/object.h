@@ -5,6 +5,11 @@
 #include "tpm2_session.h"
 #include "tpm2_util.h"
 
+#include <openssl/asn1.h>
+#include <openssl/asn1t.h>
+#include <openssl/pem.h>
+#include <openssl/bio.h>
+
 typedef struct tpm2_loaded_object tpm2_loaded_object;
 struct tpm2_loaded_object {
     TPM2_HANDLE handle;
@@ -12,6 +17,14 @@ struct tpm2_loaded_object {
     const char *path;
     tpm2_session *session;
 };
+
+typedef struct {
+    ASN1_OBJECT *type;
+    ASN1_BOOLEAN emptyAuth;
+    ASN1_INTEGER *parent;
+    ASN1_OCTET_STRING *pubkey;
+    ASN1_OCTET_STRING *privkey;
+} TSSPRIVKEY_OBJ;
 
 /**
  * Parses a string representation of a context object, either a file or handle,
@@ -89,5 +102,9 @@ tool_rc tpm2_util_object_load_auth_pub_priv(ESYS_CONTEXT *ctx, const char *objec
         const char *auth, tpm2_loaded_object *outobject,
         bool is_restricted_pswd_session, tpm2_handle_flags flags,
         TPM2B_PUBLIC *pub, TPM2B_PRIVATE *priv);
+
+tool_rc fetch_tpk(const char *objectstr, TSSPRIVKEY_OBJ **tpk);
+
+tool_rc fetch_priv_pub_from_tpk(TSSPRIVKEY_OBJ *tpk, TPM2B_PUBLIC *pub, TPM2B_PRIVATE *priv);
 
 #endif /* LIB_OBJECT_H_ */
