@@ -9,12 +9,15 @@
 #include "files.h"
 #include "log.h"
 #include "tpm2.h"
+#include "object.h"
 #include "tpm2_alg_util.h"
 #include "tpm2_attr_util.h"
 #include "tpm2_auth_util.h"
 #include "tpm2_hierarchy.h"
 #include "tpm2_openssl.h"
 #include "tpm2_tool.h"
+
+DECLARE_ASN1_FUNCTIONS(TSSPRIVKEY_OBJ);
 
 #define MAX_SESSIONS 3
 typedef struct tpm_loadexternal_ctx tpm_loadexternal_ctx;
@@ -49,6 +52,7 @@ struct tpm_loadexternal_ctx {
     TPM2B_DIGEST cp_hash;
     bool is_command_dispatch;
     TPMI_ALG_HASH parameter_hash_algorithm;
+    bool is_tsspem;
 };
 
 static tpm_loadexternal_ctx ctx = {
@@ -228,7 +232,7 @@ static tool_rc process_inputs(ESYS_CONTEXT *ectx) {
                 return tool_rc_general_error;
             }
         }
-    } else {
+    } else if (!ctx.private_key_path) {
         LOG_ERR("Unkown internal state");
         return tool_rc_general_error;
     }
@@ -238,7 +242,7 @@ static tool_rc process_inputs(ESYS_CONTEXT *ectx) {
      * and at a maximum a fully specified
      * public, load the private portion.
      */
-    if (ctx.private_key_path) {
+    if (ctx.private_key_path && !ctx.is_tsspem) {
         /*
          * when nameAlg is not TPM2_ALG_NULL, seed value is needed to pass
          * consistency checks by TPM
@@ -285,6 +289,30 @@ static tool_rc process_inputs(ESYS_CONTEXT *ectx) {
              * public and private portions of the object.
              */
             ctx.pub.publicArea.nameAlg = TPM2_ALG_NULL;
+        }
+    }
+
+    if (ctx.private_key_path && ctx.is_tsspem) {
+        TSSPRIVKEY_OBJ *tpk = NULL;
+        tool_rc rc = fetch_tpk(ctx.private_key_path, &tpk);
+        if (rc != tool_rc_success) {
+            goto tss_ret;
+        }
+
+        TPM2B_PRIVATE priv = { 0 };
+        rc = fetch_priv_pub_from_tpk(tpk, &ctx.pub, &priv);
+        if (rc != tool_rc_success) {
+            LOG_ERR("Unable to fetch public/private portion of tss privkey");
+            goto tss_ret;
+        }
+        rc = tool_rc_success;
+
+tss_ret:
+        if (tpk) {
+            TSSPRIVKEY_OBJ_free(tpk);
+        }
+        if (rc != tool_rc_success) {
+            return rc;
         }
     }
 
@@ -340,7 +368,8 @@ static tool_rc check_options(ESYS_CONTEXT *ectx) {
     if (!ctx.key_type && ctx.private_key_path) {
         LOG_ERR("Expected key type via -G option when specifying private"
                 " portion of object");
-        return tool_rc_option_error;
+        //return tool_rc_option_error;
+        return tool_rc_success;
     }
 
     return tool_rc_success;
@@ -363,6 +392,8 @@ static bool on_option(char key, char *value) {
         break;
     case 'r':
         ctx.private_key_path = value;
+        // DO NOT COMMIT THIS
+        ctx.is_tsspem = true;
         break;
     case 'c':
         ctx.context_file_path = value;
