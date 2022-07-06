@@ -13,8 +13,6 @@
 #include "tpm2_util.h"
 #include "object.h"
 
-DECLARE_ASN1_FUNCTIONS(TSSPRIVKEY_OBJ);
-
 typedef bool (*print_fn)(FILE *f);
 
 #define FLAG_FMT (1 << 0)

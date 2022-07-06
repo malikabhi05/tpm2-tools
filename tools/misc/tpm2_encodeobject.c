@@ -13,43 +13,13 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include <openssl/asn1.h>
-#include <openssl/asn1t.h>
-#include <openssl/pem.h>
-#include <tss2/tss2_mu.h>
 
 #include "files.h"
 #include "log.h"
 #include "tpm2.h"
 #include "tpm2_options.h"
 #include "tpm2_tool.h"
-
-#define OID_loadableKey "2.23.133.10.1.3"
-
-typedef struct {
-	ASN1_OBJECT *type;
-	ASN1_BOOLEAN emptyAuth;
-	ASN1_INTEGER *parent;
-	ASN1_OCTET_STRING *pubkey;
-	ASN1_OCTET_STRING *privkey;
-} TSSPRIVKEY;
-
-DECLARE_ASN1_FUNCTIONS(TSSPRIVKEY);
-DECLARE_PEM_write_bio(TSSPRIVKEY, TSSPRIVKEY);
-
-ASN1_SEQUENCE(TSSPRIVKEY) = {
-	ASN1_SIMPLE(TSSPRIVKEY, type, ASN1_OBJECT),
-	ASN1_EXP_OPT(TSSPRIVKEY, emptyAuth, ASN1_BOOLEAN, 0),
-	ASN1_SIMPLE(TSSPRIVKEY, parent, ASN1_INTEGER),
-	ASN1_SIMPLE(TSSPRIVKEY, pubkey, ASN1_OCTET_STRING),
-	ASN1_SIMPLE(TSSPRIVKEY, privkey, ASN1_OCTET_STRING)
-} ASN1_SEQUENCE_END(TSSPRIVKEY)
-
-#define TSSPRIVKEY_PEM_STRING "TSS2 PRIVATE KEY"
-
-IMPLEMENT_ASN1_FUNCTIONS(TSSPRIVKEY);
-IMPLEMENT_PEM_write_bio(TSSPRIVKEY, TSSPRIVKEY, TSSPRIVKEY_PEM_STRING, TSSPRIVKEY);
-IMPLEMENT_PEM_read_bio(TSSPRIVKEY, TSSPRIVKEY, TSSPRIVKEY_PEM_STRING, TSSPRIVKEY);
+#include "object.h"
 
 typedef struct tpm_encodeobject_ctx tpm_encodeobject_ctx;
 struct tpm_encodeobject_ctx {
@@ -155,7 +125,7 @@ encode(void)
 {
     TSS2_RC rc;
     BIO *bio = NULL;
-    TSSPRIVKEY *tpk = NULL;
+    TSSPRIVKEY_OBJ *tpk = NULL;
 
     uint8_t private_buf[sizeof(ctx.object.private)];
     uint8_t public_buf[sizeof(ctx.object.public)];
@@ -175,7 +145,7 @@ encode(void)
         goto error;
     }
 
-    tpk = TSSPRIVKEY_new();
+    tpk = TSSPRIVKEY_OBJ_new();
     if (!tpk) {
         LOG_ERR("oom");
         goto error;
@@ -204,8 +174,8 @@ encode(void)
         goto error;
     }
 
-    PEM_write_bio_TSSPRIVKEY(bio, tpk);
-    TSSPRIVKEY_free(tpk);
+    PEM_write_bio_TSSPRIVKEY_OBJ(bio, tpk);
+    TSSPRIVKEY_OBJ_free(tpk);
     BIO_free(bio);
 
     return tool_rc_success;
@@ -213,7 +183,7 @@ encode(void)
     if (bio)
         BIO_free(bio);
     if (tpk)
-        TSSPRIVKEY_free(tpk);
+        TSSPRIVKEY_OBJ_free(tpk);
     return tool_rc_general_error;
 }
 
