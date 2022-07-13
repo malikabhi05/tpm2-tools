@@ -7,10 +7,6 @@
 #include "tool_rc.h"
 #include "tpm2.h"
 #include "tpm2_auth_util.h"
-#include <openssl/pem.h>
-#include <openssl/bio.h>
-#include <openssl/asn1.h>
-#include <openssl/asn1t.h>
 #include <tss2/tss2_mu.h>
 
 #define NULL_OBJECT "null"
@@ -18,14 +14,6 @@
 
 TPM2B_PRIVATE tpm2_util_object_tsspem_priv = { 0 };
 TPM2B_PUBLIC tpm2_util_object_tsspem_pub = { 0 };
-
-typedef struct {
-    ASN1_OBJECT *type;
-    ASN1_BOOLEAN emptyAuth;
-    ASN1_INTEGER *parent;
-    ASN1_OCTET_STRING *pubkey;
-    ASN1_OCTET_STRING *privkey;
-} TSSPRIVKEY_OBJ;
 
 ASN1_SEQUENCE(TSSPRIVKEY_OBJ) = {
     ASN1_SIMPLE(TSSPRIVKEY_OBJ, type, ASN1_OBJECT),
@@ -188,97 +176,138 @@ ret:
     return rc;
 }
 
-static tool_rc tpm2_util_object_load_tsspem(ESYS_CONTEXT *ctx,
-    const char *objectstr, tpm2_loaded_object *outobject) {
+tool_rc fetch_parent_from_tpk(const char *objectstr,
+        uint64_t *val) {
+    tool_rc rc = tool_rc_general_error;
+    TSSPRIVKEY_OBJ *tpk = NULL;
+    BIO *input_bio = BIO_new_file(objectstr, "rb");
+    if (!input_bio) {
+        LOG_ERR("Unable to read as BIO file");
+        goto ret;
+    }
 
-        tool_rc rc = tool_rc_success;
-        TSSPRIVKEY_OBJ *tpk = NULL;
-        BIO *input_bio = BIO_new_file(objectstr, "rb");
-        if (!input_bio) {
-            LOG_ERR("Unable to read as BIO file");
-            rc = tool_rc_general_error;
-            goto out;
-        }
+    tpk = PEM_read_bio_TSSPRIVKEY_OBJ(input_bio, NULL, NULL, NULL);
+    if (tpk == NULL) {
+        LOG_ERR("Unable to read PEM from provided BIO/file");
+        goto ret;
+    }
 
-        /*
-         * fetch out the various parts of the PEM file using openssl API
-         */
-        tpk = PEM_read_bio_TSSPRIVKEY_OBJ(input_bio, NULL, NULL, NULL);
-        if (tpk == NULL) {
-            LOG_ERR("Unable to read PEM from provided BIO/file");
-            rc = tool_rc_general_error;
-            goto out;
-        }
+    uint64_t parent;
+    int ret = ASN1_INTEGER_get_uint64(&parent, tpk->parent);
+    if (ret == 0 || parent > UINT32_MAX) {
+        LOG_ERR("Unable to convert parent to integer/value too large");
+        goto ret;
+    }
+    *val = parent;
+    rc = tool_rc_success;
 
-        int pub_len = tpk->pubkey->length;
-        int priv_len = tpk->privkey->length;
-
-        rc = Tss2_MU_TPM2B_PUBLIC_Unmarshal(tpk->pubkey->data, pub_len,
-            NULL, &tpm2_util_object_tsspem_pub);
-        if (rc != tool_rc_success) {
-            LOG_ERR("Error deserializing public portion of object");
-            rc = tool_rc_general_error;
-            goto out;
-        }
-
-        rc = Tss2_MU_TPM2B_PRIVATE_Unmarshal(tpk->privkey->data, priv_len,
-            NULL, &tpm2_util_object_tsspem_priv);
-        if (rc != tool_rc_success) {
-            LOG_ERR("Error deserializing private portion of object");
-            rc = tool_rc_general_error;
-            goto out;
-        }
-
-        uint64_t val;
-        int ret = ASN1_INTEGER_get_uint64(&val, tpk->parent);
-        if (ret == 0 || val > UINT32_MAX) {
-            LOG_ERR("Unable to convert parent to integer/value too large");
-            rc = tool_rc_general_error;
-            goto out;
-        }
-
-        bool is_persistent_parent = (val != TPM2_RH_OWNER && val != 0);
-        if (!is_persistent_parent) {
-            ESYS_TR obj_parent = ESYS_TR_NONE;
-            rc = setup_primary(ctx, &obj_parent);
-            if (rc != tool_rc_success) {
-                LOG_ERR("Unable to create parent using createprimary");
-                rc = tool_rc_general_error;
-                goto out;
-            }
-
-            outobject->tr_handle = obj_parent;
-            rc = Esys_TR_GetTpmHandle(ctx, obj_parent,
-                &outobject->handle);
-            if (rc != TSS2_RC_SUCCESS) {
-                LOG_ERR("Unable to fetch TPM handle from ESYS TR handle");
-                rc = tool_rc_general_error;
-                goto out;
-            }
-        } else {
-            ESYS_TR tr_parent = ESYS_TR_NONE;
-            rc = tpm2_from_tpm_public(ctx, val, ESYS_TR_NONE, ESYS_TR_NONE,
-                ESYS_TR_NONE, &tr_parent);
-            if (rc != tool_rc_success) {
-                LOG_ERR("Unable to fetch TR Handle for persistent parent");
-                rc = tool_rc_general_error;
-                goto out;
-            }
-
-            outobject->tr_handle = tr_parent;
-        }
-
-out:
-        if (tpk) {
-            TSSPRIVKEY_OBJ_free(tpk);
-        }
-        if (input_bio) {
-            BIO_free(input_bio);
-        }
-
-        return rc;
+ret:
+    if (input_bio) {
+        BIO_free(input_bio);
+    }
+    if (tpk) {
+        TSSPRIVKEY_OBJ_free(tpk);
+    }
+    return rc;
 }
 
+tool_rc tpm2_util_object_fetch_priv_pub_from_tpk(const char *objectstr,
+        TPM2B_PUBLIC *pub, TPM2B_PRIVATE *priv) {
+
+    tool_rc rc = tool_rc_general_error;
+    TSSPRIVKEY_OBJ *tpk = NULL;
+    BIO *input_bio = BIO_new_file(objectstr, "rb");
+    if (!input_bio) {
+        LOG_ERR("Unable to read as BIO file");
+        goto ret;
+    }
+
+    tpk = PEM_read_bio_TSSPRIVKEY_OBJ(input_bio, NULL, NULL, NULL);
+    if (tpk == NULL) {
+        LOG_ERR("Unable to read PEM from provided BIO/file");
+        goto ret;
+    }
+
+
+    int pub_len = tpk->pubkey->length;
+    int priv_len = tpk->privkey->length;
+    if (pub_len < 1 || priv_len < 1) {
+        LOG_ERR("Error deserializing TSS Privkey Object");
+        goto ret;
+    }
+            
+    rc = Tss2_MU_TPM2B_PUBLIC_Unmarshal(tpk->pubkey->data, pub_len,
+        NULL, pub);
+    if (rc != tool_rc_success) {
+        LOG_ERR("Error deserializing public portion of object");
+        goto ret;
+    }
+
+    rc = Tss2_MU_TPM2B_PRIVATE_Unmarshal(tpk->privkey->data, priv_len,
+        NULL, priv);
+    if (rc != tool_rc_success) {
+        LOG_ERR("Error deserializing private portion of object");
+    }
+
+ret:
+    if (input_bio) {
+        BIO_free(input_bio);
+    }
+    if (tpk) {
+        TSSPRIVKEY_OBJ_free(tpk);
+    }
+    return rc;
+}
+
+static tool_rc tpm2_util_object_load_tsspem(ESYS_CONTEXT *ctx,
+        const char *objectstr, tpm2_loaded_object *outobject) {
+
+    /*
+     * fetch out the various parts of the PEM file using openssl API
+     */
+    tool_rc rc = tpm2_util_object_fetch_priv_pub_from_tpk(objectstr,
+        &tpm2_util_object_tsspem_pub, &tpm2_util_object_tsspem_priv);
+    if (rc != tool_rc_success) {
+        LOG_ERR("Unable to fetch public/private portions of TSS PRIVKEY");
+        return rc;
+    }
+
+    uint64_t val;
+    rc = fetch_parent_from_tpk(objectstr, &val);
+    if (rc != tool_rc_success) {
+        return rc;
+    }
+
+    bool is_persistent_parent = (val != TPM2_RH_OWNER && val != 0);
+    if (!is_persistent_parent) {
+        ESYS_TR obj_parent = ESYS_TR_NONE;
+        rc = setup_primary(ctx, &obj_parent);
+        if (rc != tool_rc_success) {
+            LOG_ERR("Unable to create parent using createprimary");
+            return rc;
+        }
+
+        outobject->tr_handle = obj_parent;
+        rc = Esys_TR_GetTpmHandle(ctx, obj_parent,
+            &outobject->handle);
+        if (rc != TSS2_RC_SUCCESS) {
+            LOG_ERR("Unable to fetch TPM handle from ESYS TR handle");
+            return rc;
+        }
+    } else {
+        ESYS_TR tr_parent = ESYS_TR_NONE;
+        rc = tpm2_from_tpm_public(ctx, val, ESYS_TR_NONE, ESYS_TR_NONE,
+            ESYS_TR_NONE, &tr_parent);
+        if (rc != tool_rc_success) {
+            LOG_ERR("Unable to fetch TR Handle for persistent parent");
+            return rc;
+        }
+
+        outobject->tr_handle = tr_parent;
+    }
+
+    return rc;
+}
 
 static tool_rc do_ctx_file(ESYS_CONTEXT *ctx, const char *objectstr, FILE *f,
         tpm2_loaded_object *outobject) {
